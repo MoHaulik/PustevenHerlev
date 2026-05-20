@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<title>Puste-Ven- NXT/Care</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@800;900&display=swap" rel="stylesheet">
+<style>
+:root { 
+  /* NXT/Care Standard Launcher Colors */
+  --sky-100: #e0f2fe;
+  --sky-500: #8bb1e9; 
+  
+  /* Physics */
+  --spring: 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.25);
+  
+  /* MASSIVE Target Sizes */
+  --btn-size: clamp(220px, 35vw, 450px);
+  --icon-size: clamp(128px, 19.2vw, 256px); 
+}
+
+body, html { 
+  margin:0;
+  width: 100%;
+  height: 100%;
+  overflow:hidden; 
+  font-family:'Nunito',-apple-system,BlinkMacSystemFont,sans-serif; 
+  background: var(--sky-100); /* Opdateret til den rigtige platform-baggrund */
+  touch-action:none; 
+  -webkit-tap-highlight-color:transparent; 
+}
+
+#start-screen { 
+  position:absolute; 
+  top:0; left:0; 
+  width:100%; height:100%; 
+  display:flex; 
+  flex-direction:column; 
+  align-items:center; 
+  justify-content:center; 
+  z-index:10; 
+  transition:opacity .8s cubic-bezier(.4,0,.2,1); 
+}
+
+/* Universal Play Icon SVG Styles */
+.play-svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  fill: currentColor;
+  margin-left: 10%; /* Optical centering for the play triangle */
+  transition: all var(--spring);
+}
+
+/* The "Liquid Sky Puddle" Button */
+.xr-btn {
+  position: relative;
+  cursor: pointer; 
+  outline: none; 
+  border: none;
+  display: flex; 
+  align-items: center; 
+  justify-content: center;
+  text-decoration: none; 
+  user-select: none;
+  transition: all var(--spring);
+  
+  /* Specific Shape & Colors */
+  width: calc(var(--btn-size) * 1.2); 
+  height: calc(var(--btn-size) * 1.1);
+  border-radius: 60% 40% 40% 60% / 50% 60% 40% 50%;
+  background: var(--sky-100); 
+  color: var(--sky-500);
+  box-shadow: inset 15px 15px 30px #b9ddf5, inset -15px -15px 30px #ffffff;
+}
+
+.xr-btn:hover { 
+  border-radius: 50%; 
+  transform: scale(1.05); 
+  background: var(--sky-500); 
+  color: var(--sky-100); 
+  box-shadow: 15px 15px 30px #b9ddf5, -15px -15px 30px #ffffff; 
+}
+
+.xr-btn:active {
+  transform: scale(0.95);
+}
+
+.webxr-hidden { opacity:0 !important; pointer-events:none !important; }
+
+#loading-text { 
+  position:absolute; 
+  top:40px; width:100%; 
+  text-align:center; 
+  color:#8bb1e9; /* Tilpasset farve for at ses på den lyse baggrund */
+  font-size:22px; 
+  font-weight:900; 
+  display:none; 
+  animation:pulse 2s infinite; 
+  z-index: 11;
+}
+
+@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.7;transform:scale(.98)} }
+</style>
+</head>
+<body>
+
+<!-- SVG Defs for the Launcher -->
+<svg width="0" height="0" style="position:absolute;">
+  <defs>
+    <g id="icon-play">
+      <path d="M8 5v14l11-7z" stroke-linejoin="round" stroke-linecap="round"/>
+    </g>
+  </defs>
+</svg>
+
+<div id="loading-text">✨ Vækker magien til live... ✨</div>
+<div id="start-screen">
+  <!-- Launch Button -->
+  <button class="xr-btn" id="launch-button" aria-label="Start XR Experience">
+    <svg class="play-svg" viewBox="0 0 24 24">
+      <use href="#icon-play"></use>
+    </svg>
+  </button>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js';
+
+/* ---------- Globals ---------- */
+let camera, scene, renderer;
+let analyser, dataArray;
+let xrSession = null;
+const clock = new THREE.Clock();
+
+// Audio
+let backgroundAudio, musicAudio;
+let micIntensity = 0;
+
+// Session State
+let sessionStartTime = 0;
+let isSessionEnding = false;
+let breathingStarted = false;
+let musicFadeStarted = false;
+
+// Intro/Settle phase
+const INTRO_DURATION = 12.0;   // total settle-in seconds before breathing begins
+
+// --- NXT/Care Standard Clap State ---
+let clapStart = 0;
+const CLAP_DIST = 0.15;
+const CLAP_TIME = 6000;
+let controller1, controller2;
+let clapHUD = null;
+
+/* ---------- Breathing Constants ---------- */
+const sessionDuration = 300;
+const boxTiming = 4.0;
+const cycleDuration = boxTiming * 4;
+
+/* ---------- Character Assets ---------- */
+let buddyContainer, bodyMesh, faceContainer, handsContainer;
+let leftEye, rightEye, mouth, blushLeft, blushRight;
+let leftHand, rightHand;
+let textSprite, dropShadow;
+let textTextures = {};
+const bubbles = [];
+const MAX_BUBBLES = 150;
+
+const BASE_BODY_RADIUS = 0.35;
+let currentBodyScale = 1.0;
+let targetSquash = new THREE.Vector3(1,1,1);
+let currentSquash = new THREE.Vector3(1,1,1);
+let eyeLookTarget = new THREE.Vector2(0,0);
+let currentEyeLook = new THREE.Vector2(0,0);
+let targetGlow = 0.0;
+let currentGlow = 0.0;
+let targetCheekPuff = 1.6;
+let currentCheekPuff = 1.6;
+
+init();
+
+/* ======================================================================= */
+function init(){
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 50);
+
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, powerPreference:"high-performance"});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.setClearColor(0x000000, 0); // transparent — required for passthrough
+
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+
+  document.body.appendChild(renderer.domElement);
+  setupLighting();
+
+  // XR controllers (for Clap-to-Close)
+  controller1 = renderer.xr.getController(0); scene.add(controller1);
+  controller2 = renderer.xr.getController(1); scene.add(controller2);
+
+  document.getElementById('launch-button').addEventListener('click', startXR);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  createTextLabels();
+  createCharacter();
+  createParticleSystem();
+  clapHUD = buildClapHUD();
+  scene.add(clapHUD);
+}
+
+/* --- NXT/Care AR Lighting Baseline (v1.3) --- */
+function setupLighting() {
+  // Strong ambient — passthrough provides zero scene illumination
+  scene.add(new THREE.AmbientLight(0xffffff, 1.6));
+
+  // Key light — gives form and depth
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  keyLight.position.set(1, 4, 2);
+  scene.add(keyLight);
+
+  // Fill light (cool sky bounce)
+  const fillLight = new THREE.DirectionalLight(0xdef0ff, 0.6);
+  fillLight.position.set(-3, 2, 3);
+  scene.add(fillLight);
+
+  // NXT/Care brand-blue rim light
+  const rimLight = new THREE.DirectionalLight(0x88aaff, 0.5);
+  rimLight.position.set(-2, 1, -1);
+  scene.add(rimLight);
+
+  // Soft warm hemisphere bounce
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x665577, 0.5));
+}
+
+/* ======================  Start XR  ====================== */
+async function startXR(){
+  document.getElementById('launch-button').style.transform = 'scale(0.9)';
+  document.getElementById('launch-button').style.opacity = '0';
+  setTimeout(() => { document.getElementById('loading-text').style.display = 'block'; }, 300);
+
+  if(!backgroundAudio){
+    backgroundAudio = new Audio('background.mp3');
+    backgroundAudio.loop = true; backgroundAudio.volume = 0.3;
+    try{ await backgroundAudio.play(); }catch(e){}
+  }
+  
+  if(!musicAudio){ musicAudio = new Audio('bobble.mp3'); musicAudio.loop = true; musicAudio.volume = 0; }
+
+  if(!navigator.xr){ alert('WebXR understøttes desværre ikke på denne enhed.'); return; }
+  const supported = await navigator.xr.isSessionSupported('immersive-ar');
+  if(!supported){ alert('AR understøttes ikke her. Prøv med en nyere smartphone eller tablet.'); return; }
+
+  const session = await navigator.xr.requestSession('immersive-ar', {
+    optionalFeatures: ['dom-overlay', 'light-estimation'],
+    domOverlay: { root: document.body }
+  });
+
+  session.addEventListener('visibilitychange', () => {
+    backgroundAudio.play().catch(()=>{});
+    if (musicAudio && musicFadeStarted) musicAudio.play().catch(()=>{});
+  });
+
+  session.addEventListener('end', onSessionEnd);
+  onSessionStarted(session);
+}
+
+/* ==========================  onSessionStarted  ========================= */
+function onSessionStarted(session){
+  xrSession = session;
+  renderer.xr.setReferenceSpaceType('local');
+  renderer.xr.setSession(session);
+  document.getElementById('start-screen').classList.add('webxr-hidden');
+
+  breathingStarted = true; // starts the render loop; intro plays first
+  sessionStartTime = clock.getElapsedTime();
+  renderer.setAnimationLoop(render);
+
+  navigator.mediaDevices.getUserMedia({audio:true, video:false}).then(stream => {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.85;
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    src.connect(analyser);
+  }).catch(e => console.log("Mikrofon adgang ignoreret. Visuel magi fortsætter."));
+}
+
+/* ===================  Text Labels  =================== */
+function createTextLabels() {
+  const W = 2048, H = 600;
+
+  const makeLabel = (text, bgColor, textColor, borderColor, fontSize=160) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    ctx.shadowColor = 'rgba(0,0,0,0.12)';
+    ctx.shadowBlur = 30; ctx.shadowOffsetY = 20;
+    ctx.fillStyle = bgColor;
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 18;
+
+    const bH = H - 160;
+    ctx.beginPath();
+    ctx.roundRect(50, 40, W - 100, bH, 130);
+    ctx.moveTo(W/2 - 70, bH + 40);
+    ctx.quadraticCurveTo(W/2, H - 10, W/2 + 20, H - 20);
+    ctx.quadraticCurveTo(W/2 + 20, bH + 80, W/2 + 70, bH + 40);
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.roundRect(50, 40, W - 100, bH, 130);
+    ctx.stroke();
+
+    ctx.font = `900 ${fontSize}px "Nunito", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = textColor;
+    ctx.fillText(text, W/2, (bH/2) + 45);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    return tex;
+  };
+
+  // Intro / settle-in greetings
+  textTextures.greet  = makeLabel("Hej! Er du klar til at puste med mig?", "#ffffff", "#0066cc", "#88ccff", 110);
+
+  // Breathing-cycle prompts
+  textTextures.inhale = makeLabel("Snus blomsterne ind!", "#ffffff", "#0088ff", "#88ccff");
+  textTextures.hold1  = makeLabel("Hold vejret lidt...",   "#fffced", "#d49a00", "#ffdf8a");
+  textTextures.exhale = makeLabel("Pust bobler!",          "#fff0f5", "#d84b7a", "#ffb3d9");
+  textTextures.hold2  = makeLabel("Slap af og smil.",      "#f0fff5", "#009944", "#aaffcc");
+
+  const mat = new THREE.SpriteMaterial({ map: textTextures.greet, transparent: true });
+  textSprite = new THREE.Sprite(mat);
+  textSprite.scale.set(2.5, 0.73, 1);
+  textSprite.position.set(0, 1.05, -1.5);
+  scene.add(textSprite);
+}
+
+function createCharacter() {
+  buddyContainer = new THREE.Group();
+  buddyContainer.position.set(0, -0.25, -1.8);
+  scene.add(buddyContainer);
+
+  // Ground shadow
+  const shadowGeo = new THREE.PlaneGeometry(1.4, 1.4);
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  const sctx = canvas.getContext('2d');
+  const grad = sctx.createRadialGradient(128,128,0,128,128,128);
+  grad.addColorStop(0,'rgba(0,0,0,0.25)');
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  sctx.fillStyle = grad; sctx.fillRect(0,0,256,256);
+  const shadowTex = new THREE.CanvasTexture(canvas);
+  const shadowMat = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, opacity: 0.8 });
+  dropShadow = new THREE.Mesh(shadowGeo, shadowMat);
+  dropShadow.rotation.x = -Math.PI/2;
+  dropShadow.position.y = -0.4;
+  buddyContainer.add(dropShadow);
+
+  // Body
+  const bodyGeo = new THREE.SphereGeometry(BASE_BODY_RADIUS, 64, 64);
+  const bodyMat = new THREE.MeshPhysicalMaterial({
+    color: 0x99ddff, emissive: 0x99ddff, emissiveIntensity: 0.0,
+    roughness: 0.25, metalness: 0.0,
+    clearcoat: 1.0, clearcoatRoughness: 0.15,
+    transmission: 0.4, thickness: 1.5
+  });
+  bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+  buddyContainer.add(bodyMesh);
+
+  faceContainer = new THREE.Group();
+  faceContainer.position.set(0, 0, BASE_BODY_RADIUS);
+  buddyContainer.add(faceContainer);
+
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+  const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const blushMat = new THREE.MeshBasicMaterial({ color: 0xff5588, transparent: true, opacity: 0.5 });
+  const mouthMat = new THREE.MeshBasicMaterial({ color: 0x330011 });
+
+  leftEye = new THREE.Group(); leftEye.position.set(-0.14, 0.08, 0.0); faceContainer.add(leftEye);
+  const lBase = new THREE.Mesh(new THREE.SphereGeometry(0.045, 32, 32), eyeMat);
+  lBase.scale.set(0.85, 1.3, 0.4); leftEye.add(lBase);
+  const lHigh1 = new THREE.Mesh(new THREE.SphereGeometry(0.016, 16, 16), highlightMat);
+  lHigh1.position.set(0.012, 0.024, 0.018); leftEye.add(lHigh1);
+  const lHigh2 = new THREE.Mesh(new THREE.SphereGeometry(0.007, 16, 16), highlightMat);
+  lHigh2.position.set(-0.012, -0.018, 0.018); leftEye.add(lHigh2);
+
+  rightEye = new THREE.Group(); rightEye.position.set(0.14, 0.08, 0.0); faceContainer.add(rightEye);
+  const rBase = new THREE.Mesh(new THREE.SphereGeometry(0.045, 32, 32), eyeMat);
+  rBase.scale.set(0.85, 1.3, 0.4); rightEye.add(rBase);
+  const rHigh1 = new THREE.Mesh(new THREE.SphereGeometry(0.016, 16, 16), highlightMat);
+  rHigh1.position.set(0.012, 0.024, 0.018); rightEye.add(rHigh1);
+  const rHigh2 = new THREE.Mesh(new THREE.SphereGeometry(0.007, 16, 16), highlightMat);
+  rHigh2.position.set(-0.012, -0.018, 0.018); rightEye.add(rHigh2);
+
+  blushLeft = new THREE.Mesh(new THREE.SphereGeometry(0.04, 32, 16), blushMat);
+  blushLeft.position.set(-0.19, 0.01, -0.01); faceContainer.add(blushLeft);
+  blushRight = new THREE.Mesh(new THREE.SphereGeometry(0.04, 32, 16), blushMat);
+  blushRight.position.set(0.19, 0.01, -0.01); faceContainer.add(blushRight);
+
+  mouth = new THREE.Mesh(new THREE.SphereGeometry(0.03, 32, 32), mouthMat);
+  mouth.position.set(0, -0.05, 0.0); faceContainer.add(mouth);
+
+  handsContainer = new THREE.Group(); buddyContainer.add(handsContainer);
+  const handGeo = new THREE.SphereGeometry(0.08, 32, 32);
+  leftHand = new THREE.Mesh(handGeo, bodyMat);
+  rightHand = new THREE.Mesh(handGeo, bodyMat);
+  handsContainer.add(leftHand); handsContainer.add(rightHand);
+}
+
+function createParticleSystem() {
+  const bubbleGeo = new THREE.SphereGeometry(0.04, 32, 32);
+  const bubbleMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.4,
+    roughness: 0.0, metalness: 0.0,
+    transmission: 1.0, ior: 1.1,
+    iridescence: 1.0, iridescenceIOR: 1.3,
+    iridescenceThicknessRange: [100, 400], clearcoat: 1.0
+  });
+  for(let i=0; i<MAX_BUBBLES; i++) {
+    const mesh = new THREE.Mesh(bubbleGeo, bubbleMat.clone());
+    mesh.visible = false;
+    scene.add(mesh);
+    bubbles.push({ mesh, life: 0, pos: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'none', baseScale: 1 });
+  }
+}
+function getDeadBubble() { return bubbles.find(b => b.life <= 0); }
+
+/* =========================  Session End  ========================= */
+function onSessionEnd() {
+  isSessionEnding = false; breathingStarted = false; musicFadeStarted = false;
+  xrSession = null;
+  document.getElementById('start-screen').classList.remove('webxr-hidden');
+  document.getElementById('launch-button').style.transform = 'scale(1)';
+  document.getElementById('launch-button').style.opacity = '1';
+  document.getElementById('loading-text').style.display = 'none';
+  if (backgroundAudio) { backgroundAudio.pause(); backgroundAudio.currentTime = 0; }
+  if (musicAudio) { musicAudio.pause(); musicAudio.currentTime = 0; musicAudio.volume = 0; }
+  clapStart = 0;
+  if (clapHUD) clapHUD.visible = false;
+  renderer.setAnimationLoop(null);
+}
+
+/* ============  NXT/Care v1.3 Clap-to-Close HUD  ============ */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+function buildClapHUD() {
+  const hud = new THREE.Group();
+  
+  // Opdateret position: Flyttet ned foran karakteren, i stedet for op i loftet
+  hud.position.set(0, 0.4, -1.2); 
+
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 220;
+  const tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.LinearFilter;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 0.301),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true })
+  );
+  hud.add(mesh);
+  hud.userData = { canvas: c, ctx: c.getContext('2d'), tex };
+  hud.visible = false;
+  return hud;
+}
+
+function drawClapHUD(hud) {
+  hud.visible = clapStart > 0;
+  if (!hud.visible) return;
+  const { canvas, ctx, tex } = hud.userData;
+  const W = 1024, H = 220, R = 110;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Soft sky-blue elevation shadow
+  ctx.shadowColor = 'rgba(14,165,233,0.22)';
+  ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
+
+  // White-glass card
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  roundRect(ctx, 12, 8, W - 24, H - 24, R);
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+
+  // Inner highlight border
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 13, 9, W - 26, H - 26, R - 1);
+  ctx.stroke();
+
+  const prog = Math.min(1, (Date.now() - clapStart) / CLAP_TIME);
+  const remain = Math.max(0, Math.ceil((CLAP_TIME - (Date.now() - clapStart)) / 1000));
+
+  // Text — dark slate, no shadow
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '800 52px -apple-system, "SF Pro Rounded", "Segoe UI", Helvetica, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`👏 Hold sammen i ${remain}s for at lukke`, W / 2, 78);
+
+  // Bar track
+  const bx = 64, by = 142, bw = W - 128, bh = 36, br = 18;
+  ctx.fillStyle = 'rgba(14,165,233,0.12)';
+  roundRect(ctx, bx, by, bw, bh, br); ctx.fill();
+
+  // Bar fill — sky-blue gradient
+  if (prog > 0) {
+    const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    grad.addColorStop(0, '#bae6fd');
+    grad.addColorStop(1, '#0ea5e9');
+    ctx.fillStyle = grad;
+    roundRect(ctx, bx, by, Math.max(br * 2, Math.round(bw * prog)), bh, br);
+    ctx.fill();
+  }
+  tex.needsUpdate = true;
+}
+
+function checkClap(controllers, exitImmersiveMode) {
+  if (controllers.length < 2) { clapStart = 0; return; }
+  const c1 = controllers[0], c2 = controllers[1];
+  if (c1.position.lengthSq() === 0 && c2.position.lengthSq() === 0) { clapStart = 0; return; }
+  if (c1.position.distanceTo(c2.position) <= CLAP_DIST) {
+    if (!clapStart) clapStart = Date.now();
+    else if (Date.now() - clapStart >= CLAP_TIME) {
+      exitImmersiveMode();
+      clapStart = 0;
+    }
+  } else clapStart = 0;
+}
+
+/* =========================  Render loop  ========================= */
+const mouthTargetScale = new THREE.Vector3(1,1,1);
+const eyeTargetScale = new THREE.Vector3(1,1,1);
+const bodyTargetColor = new THREE.Color();
+const MOUTH_REST = new THREE.Vector3(0.8, 0.2, 0.5);
+
+function render(){
+  const delta = Math.min(clock.getDelta(), 0.1);
+  const now = clock.getElapsedTime();
+  if (!breathingStarted) { renderer.render(scene, camera); return; }
+
+  // Clap-to-Close (always active during XR session)
+  if (xrSession && controller1 && controller2) {
+    checkClap([controller1, controller2], () => {
+      if (xrSession && !isSessionEnding) { isSessionEnding = true; xrSession.end(); }
+    });
+  }
+  drawClapHUD(clapHUD);
+
+  const elapsed = now - sessionStartTime;
+
+  /* ============ INTRO / SETTLE-IN PHASE ============ */
+  if (elapsed < INTRO_DURATION) {
+    textSprite.material.map = textTextures.greet; // Always show greeting
+
+    // Idle calm body — gentle wobble, no breathing puff
+    currentBodyScale = THREE.MathUtils.lerp(currentBodyScale, 1.0, 0.06);
+    currentSquash.lerp(new THREE.Vector3(1,1,1), 0.1);
+    bodyMesh.scale.set(currentBodyScale, currentBodyScale, currentBodyScale);
+
+    // Soft, friendly idle face
+    mouth.scale.lerp(new THREE.Vector3(1.4, 0.3, 0.5), 0.15); // small smile
+    let isBlink = (now % 3.5) < 0.13;
+    let eyeS = isBlink ? new THREE.Vector3(1, 0.05, 1) : new THREE.Vector3(1,1,1);
+
+    // Curious eye darting
+    if (Math.random() < 0.02) eyeLookTarget.set((Math.random()-0.5)*0.035, (Math.random()-0.5)*0.025);
+    currentEyeLook.lerp(eyeLookTarget, 0.08);
+    leftEye.scale.lerp(eyeS, 0.3);
+    leftEye.position.x = -0.14 + currentEyeLook.x; leftEye.position.y = 0.08 + currentEyeLook.y;
+    rightEye.scale.lerp(eyeS, 0.3);
+    rightEye.position.x = 0.14 + currentEyeLook.x; rightEye.position.y = 0.08 + currentEyeLook.y;
+
+    // Cheeks at rest
+    currentCheekPuff = THREE.MathUtils.lerp(currentCheekPuff, 1.6, 0.1);
+    blushLeft.scale.set(currentCheekPuff, 0.6, 0.3);
+    blushRight.scale.set(currentCheekPuff, 0.6, 0.3);
+
+    // Calm warm body color, gentle pulse glow
+    bodyTargetColor.setHex(0xffd6a0);
+    bodyMesh.material.color.lerp(bodyTargetColor, 0.04);
+    bodyMesh.material.emissive.copy(bodyMesh.material.color);
+    currentGlow = THREE.MathUtils.lerp(currentGlow, 0.15 + Math.sin(now*1.5)*0.05, 0.08);
+    bodyMesh.material.emissiveIntensity = currentGlow;
+
+    // Hands at rest, slight idle bob
+    leftHand.position.set(-0.35, -0.15 + Math.sin(now*1.2)*0.01, BASE_BODY_RADIUS*0.6);
+    leftHand.rotation.z = 0;
+    rightHand.position.set(0.35, -0.15 + Math.sin(now*1.2 + 0.5)*0.01, BASE_BODY_RADIUS*0.6);
+    rightHand.rotation.z = 0;
+
+    // Friendly entrance: float-in from below for first 1.5s
+    let introT = Math.min(1, elapsed / 1.5);
+    let introEase = 1 - Math.pow(1-introT, 3);
+    buddyContainer.position.y = THREE.MathUtils.lerp(-1.0, -0.25, introEase) + Math.sin(now*1.5)*0.02;
+    buddyContainer.rotation.z = Math.sin(now*0.9)*0.02;
+
+    // Floating speech bubble
+    textSprite.position.y = 1.05 + Math.sin(now * 1.5) * 0.03;
+    // Slight scale pop on greeting appear
+    let textPop = Math.min(1, elapsed / 0.8);
+    textSprite.scale.set(2.5 * textPop, 0.73 * textPop, 1);
+
+    dropShadow.scale.setScalar(1.0 - (buddyContainer.position.y + 0.25)*1.5);
+    renderer.render(scene, camera);
+    return;
+  }
+
+  /* ============ BREATHING PHASE (after intro) ============ */
+  const breathElapsed = elapsed - INTRO_DURATION;
+
+  /* Mic intensity */
+  if(analyser){
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0; for(let i = 2; i < 20; i++) sum += dataArray[i];
+    let rawIntensity = Math.min(1, sum / (18 * 128));
+    micIntensity = THREE.MathUtils.lerp(micIntensity, rawIntensity, 0.15);
+  }
+
+  if(breathElapsed >= sessionDuration && !isSessionEnding){
+    if (xrSession) xrSession.end(); return;
+  }
+
+  /* Box Breathing State Machine */
+  const t = breathElapsed % cycleDuration;
+  let stage, breathProgress;
+
+  if(t < boxTiming) { stage = 'inhale'; breathProgress = t / boxTiming; }
+  else if(t < boxTiming * 2) { stage = 'inhale-hold'; breathProgress = 1; }
+  else if(t < boxTiming * 3) { stage = 'exhale'; breathProgress = 1 - ((t - boxTiming * 2) / boxTiming); }
+  else { stage = 'exhale-hold'; breathProgress = 0; }
+
+  let targetScale = 1.0;
+  let handYOffset = 0.0; let handXOffset = 0.0; let handRotZ = 0.0;
+  let isBlinking = (now % 4.2) < 0.15;
+
+  if (Math.random() < 0.015 && stage !== 'inhale-hold') {
+    eyeLookTarget.set((Math.random()-0.5)*0.035, (Math.random()-0.5)*0.025);
+  }
+
+  if (stage === 'inhale') {
+    textSprite.material.map = textTextures.inhale;
+    targetScale = 1.0 + (breathProgress * 0.75);
+    targetSquash.set(1.06, 0.94, 1.06);
+    mouthTargetScale.set(0.5, 1.4, 0.5);
+    eyeTargetScale.set(1, 1.15, 1);
+    isBlinking = false;
+    handYOffset = breathProgress * 0.18;
+    handXOffset = breathProgress * 0.12;
+    handRotZ = Math.PI * 0.25 * breathProgress;
+    bodyTargetColor.setHex(0x88ccff);
+    targetGlow = breathProgress * 0.4;
+    targetCheekPuff = 1.6;
+
+    if (Math.random() < 0.4) {
+      let b = getDeadBubble();
+      if(b) {
+        b.type = 'inhale'; b.life = 1.2; b.baseScale = 0.15 + Math.random()*0.25;
+        b.pos.set(buddyContainer.position.x + (Math.random()-0.5)*3.0,
+                  buddyContainer.position.y + (Math.random()-0.5)*3.0 + 0.6,
+                  buddyContainer.position.z - 0.4 - Math.random()*1.5);
+        b.mesh.visible = true;
+        b.mesh.material.color.setHex(0xffffff);
+        b.mesh.material.emissive.setHex(0xffff88);
+        b.mesh.material.emissiveIntensity = 1.0;
+      }
+    }
+  } else if (stage === 'inhale-hold') {
+    textSprite.material.map = textTextures.hold1;
+    targetScale = 1.75;
+    targetSquash.set(1.0, 1.0, 1.0);
+    mouthTargetScale.set(1.5, 0.25, 0.5);
+    eyeTargetScale.set(1, 0.05, 1);
+    isBlinking = false; eyeLookTarget.set(0,0);
+    handYOffset = 0.18; handXOffset = 0.12; handRotZ = Math.PI * 0.25;
+    bodyTargetColor.setHex(0x99eebb);
+    targetGlow = 0.5;
+    targetCheekPuff = 1.8;
+  } else if (stage === 'exhale') {
+    textSprite.material.map = textTextures.exhale;
+    targetScale = 1.0 + (breathProgress * 0.75);
+    targetSquash.set(0.94, 1.06, 0.94);
+    mouthTargetScale.set(0.7, 1.5, 0.5);
+    eyeTargetScale.set(1, 1, 1);
+    isBlinking = false;
+    handYOffset = breathProgress * 0.18; handXOffset = breathProgress * 0.12;
+    handRotZ = Math.PI * -0.15 * (1 - breathProgress);
+    bodyTargetColor.setHex(0xffaacc);
+    targetGlow = breathProgress * 0.4;
+    targetCheekPuff = 2.5 + (micIntensity * 1.5);
+
+    let spawnChance = 0.25 + (micIntensity * 0.8);
+    if (Math.random() < spawnChance) {
+      let b = getDeadBubble();
+      if(b) {
+        b.type = 'exhale'; b.life = 3.5;
+        b.baseScale = 0.6 + Math.random()*0.9 + (micIntensity * 2.0);
+        let mPos = new THREE.Vector3(); mouth.getWorldPosition(mPos);
+        b.pos.copy(mPos);
+        b.vel.set((Math.random()-0.5)*1.2, Math.random()*0.8 + 0.1, 1.5 + Math.random() + (micIntensity * 4.0));
+        b.mesh.visible = true;
+        b.mesh.material.color.setHex(0xffffff);
+        b.mesh.material.emissiveIntensity = 0;
+      }
+    }
+  } else {
+    textSprite.material.map = textTextures.hold2;
+    targetScale = 1.0;
+    targetSquash.set(1.0, 1.0, 1.0);
+    mouthTargetScale.copy(MOUTH_REST);
+    if (!isBlinking) eyeTargetScale.set(1, 1, 1);
+    handYOffset = 0.0; handXOffset = 0.0; handRotZ = 0.0;
+    bodyTargetColor.setHex(0xffddaa);
+    targetGlow = 0.0;
+    targetCheekPuff = 1.6;
+  }
+
+  /* Bobble sound logic */
+  if (musicAudio && breathElapsed >= 0) {
+    if(!musicFadeStarted) { musicFadeStarted = true; musicAudio.play().catch(()=>{}); }
+    let targetBobbleVolume = (stage === 'exhale') ? 0.4 : 0.0;
+    musicAudio.volume = THREE.MathUtils.lerp(musicAudio.volume, targetBobbleVolume, 0.1);
+  }
+
+  // Restore breathing-bubble scale (in case intro shrunk it)
+  textSprite.scale.set(2.5, 0.73, 1);
+
+  /* --- Apply transforms --- */
+  currentBodyScale = THREE.MathUtils.lerp(currentBodyScale, targetScale, 0.08);
+  currentSquash.lerp(targetSquash, 0.12);
+  bodyMesh.scale.set(
+    currentBodyScale * currentSquash.x,
+    currentBodyScale * currentSquash.y,
+    currentBodyScale * currentSquash.z
+  );
+
+  let faceZ = (BASE_BODY_RADIUS * currentBodyScale * currentSquash.z) + 0.005;
+  let faceY = (currentSquash.y - 1.0) * BASE_BODY_RADIUS;
+  faceContainer.position.set(0, faceY, faceZ);
+
+  leftHand.position.set(-0.35 - (currentBodyScale - 1)*0.22 - handXOffset, -0.15 + handYOffset + faceY, faceZ * 0.6);
+  leftHand.rotation.z = -handRotZ;
+  rightHand.position.set(0.35 + (currentBodyScale - 1)*0.22 + handXOffset, -0.15 + handYOffset + faceY, faceZ * 0.6);
+  rightHand.rotation.z = handRotZ;
+
+  mouth.scale.lerp(mouthTargetScale, 0.2);
+  currentEyeLook.lerp(eyeLookTarget, 0.08);
+  let finalEyeScale = eyeTargetScale.clone();
+  if (isBlinking && stage !== 'inhale-hold') finalEyeScale.y = 0.05;
+
+  leftEye.scale.lerp(finalEyeScale, 0.35);
+  leftEye.position.x = -0.14 + currentEyeLook.x;
+  leftEye.position.y = 0.08 + currentEyeLook.y;
+  rightEye.scale.lerp(finalEyeScale, 0.35);
+  rightEye.position.x = 0.14 + currentEyeLook.x;
+  rightEye.position.y = 0.08 + currentEyeLook.y;
+
+  currentCheekPuff = THREE.MathUtils.lerp(currentCheekPuff, targetCheekPuff, 0.15);
+  blushLeft.scale.set(currentCheekPuff, 0.6, 0.3 + (currentCheekPuff-1.6)*0.5);
+  blushRight.scale.set(currentCheekPuff, 0.6, 0.3 + (currentCheekPuff-1.6)*0.5);
+
+  bodyMesh.material.color.lerp(bodyTargetColor, 0.05);
+  bodyMesh.material.emissive.copy(bodyMesh.material.color);
+  currentGlow = THREE.MathUtils.lerp(currentGlow, targetGlow, 0.05);
+  bodyMesh.material.emissiveIntensity = currentGlow;
+
+  let micWiggle = (stage === 'exhale') ? micIntensity * 0.12 : 0;
+  buddyContainer.position.y = -0.25 + Math.sin(now * 1.5) * 0.02 + micWiggle * Math.sin(now * 30);
+  buddyContainer.rotation.z = Math.sin(now * 1.0) * 0.015 + micWiggle * Math.cos(now * 25) * 0.25;
+
+  dropShadow.scale.setScalar(1.0 + (currentBodyScale - 1.0)*0.6 - (buddyContainer.position.y + 0.25)*1.5);
+
+  /* --- Particles --- */
+  bubbles.forEach(b => {
+    if(b.life > 0) {
+      b.life -= delta;
+      if(b.type === 'inhale') {
+        let mPos = new THREE.Vector3(); mouth.getWorldPosition(mPos);
+        let dir = mPos.clone().sub(b.pos).normalize();
+        let speed = 3.0 + (1.2 - b.life) * 5.0;
+        b.pos.add(dir.multiplyScalar(delta * speed));
+        b.mesh.rotation.z += delta * 10;
+        b.mesh.scale.setScalar(b.baseScale * (b.life / 1.2));
+        if(b.pos.distanceTo(mPos) < 0.15) b.life = 0;
+      } else if (b.type === 'exhale') {
+        b.pos.add(b.vel.clone().multiplyScalar(delta));
+        b.vel.y += delta * 0.35;
+        b.pos.x += Math.sin(now * 8 + b.life * 6) * 0.01;
+        let scalePop = b.life < 0.25 ? (b.life / 0.25) : 1.0;
+        b.mesh.scale.setScalar(b.baseScale * scalePop);
+        b.mesh.rotation.y += delta * 0.5;
+        b.mesh.rotation.x += delta * 0.3;
+      }
+      b.mesh.position.copy(b.pos);
+      if(b.life <= 0) b.mesh.visible = false;
+    }
+  });
+
+  textSprite.position.y = 1.05 + Math.sin(now * 1.5) * 0.03;
+  renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
